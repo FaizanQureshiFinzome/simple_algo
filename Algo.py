@@ -1,8 +1,8 @@
-import datetime
 import os
 import time
 import pytz
 import requests
+import datetime
 import pandas as pd
 from dotenv import load_dotenv
 from config.logger import logger
@@ -235,9 +235,9 @@ class Zerodha:
             logger.error(f"Unable to fetch trade_book {e}")
             return pd.DataFrame()
 
-    def get_atm_strike(self):
+    def get_atm_strike(self, trading_symbol):
         try:
-            data = self.kite.ltp(256265)
+            data = self.kite.ltp(trading_symbol)
             logger.info(data)
         except Exception as e:
             logger.error(f"Unable get ATM strike: {e}")
@@ -245,6 +245,9 @@ class Zerodha:
     def fetch_nfo_contracts(self):
         try:
             data = self.kite.instruments("NFO")
+            if not data:
+                logger.warning("No NFO contracts fetched")
+                return pd.DataFrame()
             df = pd.DataFrame(data)
             return df
         except Exception as e:
@@ -254,6 +257,9 @@ class Zerodha:
     def fetch_equity(self):
         try:
             data = self.kite.instruments("NSE")
+            if not data:
+                logger.warning("No NSE contracts fetched")
+                return pd.DataFrame()
             df = pd.DataFrame(data)
             return df
         except Exception as e:

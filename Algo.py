@@ -1,3 +1,4 @@
+import datetime
 import os
 import time
 import pytz
@@ -30,34 +31,30 @@ class Zerodha:
 
     def fetch_ltp(self, symbol="NIFTY", step=50):
         try:
-            # if symbol == ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
-            #
-            #     response = self.session.get(self.url_index, params={"symbol": symbol})
-            # else:
-            #     response = self.session.get(self.url_equity, params={"symbol": symbol})
             data = self.session.get(self.url_index, params={"symbol": symbol}).json()
-
             if not data:
                 logger.error("No data found")
                 return None
             ltp = data['records']['underlyingValue']
-
-            return round(ltp / step) * step
+            if not ltp:
+                logger.error("Unable to fetch LTP")
+                return None
+            return (round(ltp / step) * step) + step
         except Exception as e:
             logger.error(f"Unable to fetch LTP: {e}")
+            return None
 
-    def order_placement(self, trading_symbol, transaction_type, quantity):
+    def order_placement(self, trading_symbol, transaction_type, quantity=1, contract_type=None, step=None, expiry=None):
         try:
-            ## this will run after NFO is activated
-            # trading_symbol = f"NIFTY25909{self.fetch_ltp(trading_symbol,50)}CE"
-            # option_data = self.kite.ltp(trading_symbol)
-            # ltp = option_data[f"NFO:{trading_symbol}"]['last']
-            trading_symbol = trading_symbol  # this is for testing purposes as NFO is activated
-
-            logger.info(trading_symbol)
+            if contract_type and step and expiry:
+                exchange = self.kite.EXCHANGE_NFO
+            else:
+                exchange = self.kite.EXCHANGE_NSE
+            entity = self.entity(trading_symbol=trading_symbol, step=step, contract_type=contract_type, expiry=expiry)
+            logger.info(entity)
             base_order = self.kite.place_order(variety=self.kite.VARIETY_REGULAR,
-                                               exchange=self.kite.EXCHANGE_NSE,
-                                               tradingsymbol=trading_symbol,
+                                               exchange=exchange,
+                                               tradingsymbol=entity,
                                                transaction_type=transaction_type,
                                                quantity=quantity,
                                                order_type=self.kite.ORDER_TYPE_MARKET,
@@ -66,6 +63,10 @@ class Zerodha:
 
             time.sleep(1)
             order_history = self.kite.order_history(base_order)
+            if not order_history:
+                logger.error("Unable to fetch OrderBook")
+                return
+
             logger.info(order_history[-1]["transaction_type"])
             entry_price = order_history[-1]['average_price']
             logger.info(entry_price)
@@ -81,8 +82,8 @@ class Zerodha:
 
                 logger.info(f"SL price: {sl_price}")
                 sl_order = self.kite.place_order(variety=self.kite.VARIETY_REGULAR,
-                                                 exchange=self.kite.EXCHANGE_NSE,
-                                                 tradingsymbol=trading_symbol,
+                                                 exchange=exchange,
+                                                 tradingsymbol=entity,
                                                  transaction_type=self.kite.TRANSACTION_TYPE_BUY,
                                                  quantity=quantity,
                                                  order_type=self.kite.ORDER_TYPE_SL,
@@ -91,8 +92,8 @@ class Zerodha:
                                                  product=self.kite.PRODUCT_MIS)
 
                 target_order = self.kite.place_order(variety=self.kite.VARIETY_REGULAR,
-                                                     exchange=self.kite.EXCHANGE_NSE,
-                                                     tradingsymbol=trading_symbol,
+                                                     exchange=exchange,
+                                                     tradingsymbol=entity,
                                                      transaction_type=self.kite.TRANSACTION_TYPE_BUY,
                                                      quantity=quantity,
                                                      order_type=self.kite.ORDER_TYPE_LIMIT,
@@ -108,8 +109,8 @@ class Zerodha:
 
                 logger.info(f"Target price: {sl_price}")
                 sl_order = self.kite.place_order(variety=self.kite.VARIETY_REGULAR,
-                                                 exchange=self.kite.EXCHANGE_NSE,
-                                                 tradingsymbol=trading_symbol,
+                                                 exchange=exchange,
+                                                 tradingsymbol=entity,
                                                  transaction_type=self.kite.TRANSACTION_TYPE_SELL,
                                                  quantity=quantity,
                                                  order_type=self.kite.ORDER_TYPE_SL,
@@ -118,8 +119,8 @@ class Zerodha:
                                                  product=self.kite.PRODUCT_MIS)
 
                 target_order = self.kite.place_order(variety=self.kite.VARIETY_REGULAR,
-                                                     exchange=self.kite.EXCHANGE_NSE,
-                                                     tradingsymbol=trading_symbol,
+                                                     exchange=exchange,
+                                                     tradingsymbol=entity,
                                                      transaction_type=self.kite.TRANSACTION_TYPE_SELL,
                                                      quantity=quantity,
                                                      order_type=self.kite.ORDER_TYPE_LIMIT,
@@ -131,6 +132,7 @@ class Zerodha:
             return base_order, sl_order, target_order
         except Exception as e:
             logger.error(f"Unable to place order: {e}")
+            return
 
     def exit_positions(self):
         open_orders = self.order_book() or []
@@ -182,6 +184,7 @@ class Zerodha:
             return modify
         except Exception as e:
             logger.error(f"Unable to modify order: {e}")
+            return
 
     def cancel_order(self, order_id):
         try:
@@ -194,6 +197,7 @@ class Zerodha:
             return cancel_order
         except Exception as e:
             logger.error(f"Unable to cancel order: {e}")
+            return
 
     def order_book(self):
         try:
@@ -205,6 +209,7 @@ class Zerodha:
             return orders
         except Exception as e:
             logger.error(f"Unable to fetch order book: {e}")
+            return pd.DataFrame()
 
     def position_book(self):
         try:
@@ -230,63 +235,59 @@ class Zerodha:
             logger.error(f"Unable to fetch trade_book {e}")
             return pd.DataFrame()
 
-    def fetch_symbols(self, exchange):
-        try:
-            exc = self.kite.instruments(exchange)
-            if not exc:
-                logger.error("wrong exchange")
-                return None
-
-            exc_df = pd.DataFrame(exc)
-            logger.info(exc_df.head().to_string())
-            return exc_df
-        except Exception as e:
-            logger.error(f"Unable to fetch symbols: {e}")
-
-    def get_instrument_token(self, exchange, trading_symbol):
-        try:
-            df = self.fetch_symbols(exchange)
-            if not df:
-                logger.error("wrong exchange")
-                return pd.DataFrame()
-            if trading_symbol not in df['tradingsymbol'].values:
-                logger.error("Trading Symbol not found")
-                return pd.DataFrame()
-            row = df[df['tradingsymbol'] == trading_symbol]
-            return int(row['instrument_token'].values[0])
-        except Exception as e:
-            logger.error(f"Something went wrong: {e}")
-
-    def get_fo_contracts(self, exchange):
-        try:
-            data = self.kite.instruments(exchange)
-            if not data:
-                logger.error("Wrong exchange")
-                return None
-
-            df = pd.DataFrame(data)
-
-            if "name" not in df.columns:
-                logger.error("Name not present")
-                return pd.DataFrame()
-
-            df = df[df['name'] == 'NIFTY']
-            if df.empty:
-                logger.error("No data found")
-                return pd.DataFrame()
-
-            logger.info(df.to_string())
-            return df
-        except Exception as e:
-            logger.error(f"Something went wrong: {e}")
-            return pd.DataFrame()
-
     def get_atm_strike(self):
         try:
             data = self.kite.ltp(256265)
             logger.info(data)
         except Exception as e:
             logger.error(f"Unable get ATM strike: {e}")
+
+    def fetch_nfo_contracts(self):
+        try:
+            data = self.kite.instruments("NFO")
+            df = pd.DataFrame(data)
+            return df
+        except Exception as e:
+            logger.error(f"Unable to fetch FNO contracts: {e}")
+            return pd.DataFrame()
+
+
+
+    def fetch_equity(self):
+        try:
+            data = self.kite.instruments("NSE")
+            df = pd.DataFrame(data)
+            return df
+        except Exception as e:
+            logger.error(f"Unable to fetch Equities:{e}")
+            return pd.DataFrame()
+
+    def entity(self, trading_symbol, step=None, contract_type=None, expiry=None):
+        if expiry and contract_type:
+            df = self.fetch_nfo_contracts()
+            atm = self.fetch_ltp(trading_symbol, step)
+            logger.info(atm)
+            if isinstance(expiry, str):
+                expiry = datetime.datetime.strptime(expiry, "%Y-%m-%d").date()
+
+            filtered_df = df[
+                (df['name'] == trading_symbol) &
+                (df['expiry'] == expiry) &
+                (df['strike'] == atm) &
+                (df['instrument_type'] == contract_type)
+                ]
+            entity = filtered_df["tradingsymbol"].values[0]
+            if not entity:
+                logger.warning("No entity of that name found")
+                return None
+        else:
+            df = self.fetch_equity()
+            entity = df[df['tradingsymbol'] == trading_symbol]
+            entity = entity['tradingsymbol'].values[0]
+            if not entity:
+                logger.warning("No entity of that name found")
+
+        return entity
 
 
 if __name__ == '__main__':
@@ -309,12 +310,23 @@ if __name__ == '__main__':
     # # zerodha.modify_order(order_id=250905000330225, modify_price=74, trigger_price=76)
     # zerodha.cancel_order(order_id=250905000330230)
 
+    # print(zerodha.fetch_nfo_contracts())
+    # print(zerodha.entity("RELIANCE"))
+    # print(zerodha.fetch_equity())
+    # contract_type=None, step=None, expiry=None
+    trading_symbol = input("Enter Trading Symbol: ").upper().strip()
+    transaction_type = input("Enter Transaction Type: ").upper().strip()
+    quantity = input("Enter quantity: ").upper().strip()
+    contract_type = input("Enter contract type: ").upper().strip()
+    user_input = input("Enter the number of steps: ")
+    step = int(user_input) if user_input.strip() else None
+    expiry = input("Enter date in this format '%Y-%m-%d': ")
     scheduler = BackgroundScheduler(timezone=pytz.timezone("Asia/Kolkata"))
     scheduler.start()
-    scheduler.add_job(zerodha.order_placement, 'cron', day_of_week='mon-fri', hour=9, minute=18,
-                      args=['OLAELEC', "BUY", 1])
+    scheduler.add_job(zerodha.order_placement, 'cron', day_of_week='mon-sat', hour=16, minute=2,
+                      args=[trading_symbol, transaction_type, quantity, contract_type, step, expiry])
 
-    scheduler.add_job(zerodha.exit_positions, 'cron', day_of_week='mon-fri', hour=15, minute=8)
+    scheduler.add_job(zerodha.exit_positions, 'cron', day_of_week='mon-sat', hour=16, minute=3)
     try:
         while True:
             time.sleep(1)

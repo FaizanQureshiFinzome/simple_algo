@@ -251,8 +251,6 @@ class Zerodha:
             logger.error(f"Unable to fetch FNO contracts: {e}")
             return pd.DataFrame()
 
-
-
     def fetch_equity(self):
         try:
             data = self.kite.instruments("NSE")

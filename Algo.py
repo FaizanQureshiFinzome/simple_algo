@@ -327,10 +327,10 @@ if __name__ == '__main__':
     expiry = input("Enter date in this format '%Y-%m-%d': ")
     scheduler = BackgroundScheduler(timezone=pytz.timezone("Asia/Kolkata"))
     scheduler.start()
-    scheduler.add_job(zerodha.order_placement, 'cron', day_of_week='mon-sat', hour=16, minute=2,
+    scheduler.add_job(zerodha.order_placement, 'cron', day_of_week='mon-fri', hour=9, minute=18,
                       args=[trading_symbol, transaction_type, quantity, contract_type, step, expiry])
 
-    scheduler.add_job(zerodha.exit_positions, 'cron', day_of_week='mon-sat', hour=16, minute=3)
+    scheduler.add_job(zerodha.exit_positions, 'cron', day_of_week='mon-fri', hour=15, minute=8)
     try:
         while True:
             time.sleep(1)

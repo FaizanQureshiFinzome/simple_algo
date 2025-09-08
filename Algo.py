@@ -20,7 +20,6 @@ class Zerodha:
         self.kite = KiteConnect(api_key=self.api_key)
         self.kite.set_access_token(access_token=access_token)
         self.url_index = "https://www.nseindia.com/api/option-chain-indices"
-        self.url_equity = "https://www.nseindia.com/api/quote-equity"
         self.headers = {
             "User-Agent": "Mozilla/5.0",
             "Referer": "https://www.nseindia.com/"
@@ -107,7 +106,7 @@ class Zerodha:
                 target_price = entry_price * 0.15
                 target_price = entry_price + target_price
 
-                logger.info(f"Target price: {sl_price}")
+                logger.info(f"Target price: {target_price}")
                 sl_order = self.kite.place_order(variety=self.kite.VARIETY_REGULAR,
                                                  exchange=exchange,
                                                  tradingsymbol=entity,
@@ -127,15 +126,71 @@ class Zerodha:
                                                      price=target_price,
                                                      product=self.kite.PRODUCT_MIS
                                                      )
-
+                sl_order = str(sl_order)
+                target_order = str(target_order)
+                self.monitor_orders([target_order, sl_order], trading_symbol=trading_symbol)
             logger.info(f"buy_order_id: {base_order}, sl_order: {sl_order}, target_order: {target_order}")
+
             return base_order, sl_order, target_order
         except Exception as e:
             logger.error(f"Unable to place order: {e}")
             return
 
+    def monitor_orders(self, order_ids, trading_symbol):
+        if not isinstance(order_ids, list):
+            logger.error("Order book response invalid")
+            return
+        try:
+            while True:
+                time.sleep(5)
+                positions = self.position_book()
+
+                if not positions['net']:
+                    logger.error("Unable to fetch trade book")
+                    time.sleep(2)
+                    continue
+
+                all_orders = self.order_book()
+
+                if not all_orders:
+                    logger.error("Unable to fetch orderbook")
+                    time.sleep(2)
+                    continue
+
+                for position in positions['net']:
+                    if position['quantity'] == 0 and position['tradingsymbol'] == trading_symbol:
+                        for order in all_orders:
+                            if order['status'] == "OPEN" or order['status'] == "TRIGGER PENDING":
+                                self.kite.cancel_order(variety=self.kite.VARIETY_REGULAR, order_id=order['order_id'])
+                                logger.info(f"Cancelled order: {order['tradingsymbol']} ({order['order_id']})")
+                        return
+
+                open_orders = {}
+                for o in all_orders:
+                    if o["order_id"] in order_ids:
+                        open_orders[o["order_id"]] = o
+
+                for oid, order in open_orders.items():
+                    if order['status'] == 'COMPLETE':
+                        logger.info(f"Order filled: {oid}")
+
+                        for other_oid in order_ids:
+                            if other_oid != oid and open_orders[other_oid]["status"] in ('OPEN', 'TRIGGER PENDING'):
+                                try:
+                                    self.kite.cancel_order(variety=self.kite.VARIETY_REGULAR, order_id=other_oid)
+                                    logger.info(
+                                        f"Cancelled order: {other_oid['tradingsymbol']} ({other_oid['order_id']})")
+                                except Exception as e:
+                                    logger.error(f"Failed to cancel order: {e}")
+
+                        return
+                time.sleep(1)
+        except Exception as e:
+            logger.error(f"Something went wrong while monitoring orders: {e}")
+            time.sleep(2)
+
     def exit_positions(self):
-        open_orders = self.order_book() or []
+        open_orders = self.order_book()
         if not isinstance(open_orders, list):
             logger.error("Order book response invalid")
             return
@@ -149,7 +204,7 @@ class Zerodha:
                 logger.error(f"Unable to cancel order: {e}")
 
         positions = self.position_book()
-        if not positions:
+        if not positions['net']:
             logger.warning("No position found")
             return
 
@@ -199,41 +254,47 @@ class Zerodha:
             logger.error(f"Unable to cancel order: {e}")
             return
 
-    def order_book(self):
-        try:
-            orders = self.kite.orders()
-            if not orders:
-                logger.warning("No orders found")
-                return None
-            logger.info(f"Order book: {orders}")
-            return orders
-        except Exception as e:
-            logger.error(f"Unable to fetch order book: {e}")
-            return pd.DataFrame()
+    def order_book(self, retries=3):
+        for attempt in range(retries):
+            try:
+                orders = self.kite.orders()
+                if not orders:
+                    logger.warning("No orders found")
+                    return None
+                logger.info(f"Order book: {orders}")
+                return orders
+            except Exception as e:
+                logger.error(f"Unable to fetch order book after {attempt + 1}: {e}")
 
-    def position_book(self):
-        try:
-            position = self.kite.positions()
-            if not position:
-                logger.warning("No position found")
-                return None
-            logger.info(f"Position book: {position}")
-            return position
-        except Exception as e:
-            logger.error(f"Unable to fetch position book: {e}")
-            return pd.DataFrame()
+        return None
 
-    def trade_book(self):
-        try:
-            trade_book = self.kite.trades()
-            if not trade_book:
-                logger.warning("No trades found")
-                return None
-            logger.info(f"Trade Book: {trade_book}")
-            return trade_book
-        except Exception as e:
-            logger.error(f"Unable to fetch trade_book {e}")
-            return pd.DataFrame()
+    def position_book(self, retries=3):
+        for attempt in range(retries):
+            try:
+                position = self.kite.positions()
+                if not position:
+                    logger.warning("No position found")
+                    return None
+                logger.info(f"Position book: {position}")
+                return position
+            except Exception as e:
+                logger.error(f"Unable to fetch position book after {attempt + 1}: {e}")
+                time.sleep(5)
+        return None
+
+    def trade_book(self, retries=3):
+        for attempt in range(retries):
+            try:
+                trade_book = self.kite.trades()
+                if not trade_book:
+                    logger.warning("No trades found")
+                    return None
+                logger.info(f"Trade Book: {trade_book}")
+                return trade_book
+            except Exception as e:
+                logger.error(f"Unable to fetch trade_book after {attempt + 1} :{e}")
+
+        return None
 
     def get_atm_strike(self, trading_symbol):
         try:
@@ -280,6 +341,9 @@ class Zerodha:
                 (df['strike'] == atm) &
                 (df['instrument_type'] == contract_type)
                 ]
+            if filtered_df.empty:
+                logger.warning("No matching contract found")
+                return pd.DataFrame()
             entity = filtered_df["tradingsymbol"].values[0]
             if not entity:
                 logger.warning("No entity of that name found")
@@ -303,6 +367,8 @@ if __name__ == '__main__':
     # exchange = "NFO"
     # zerodha.get_fo_contracts(exchange)
     # zerodha.get_atm_strike()
+    # order_ids = ["250908000762148", "250908000762154"]
+    # zerodha.monitor_orders(order_ids)
     #
     #
     # # logger.info(zerodha.fetch_ltp("BANKNIFTY"))
@@ -317,7 +383,7 @@ if __name__ == '__main__':
     # print(zerodha.fetch_nfo_contracts())
     # print(zerodha.entity("RELIANCE"))
     # print(zerodha.fetch_equity())
-    # contract_type=None, step=None, expiry=None
+
     trading_symbol = input("Enter Trading Symbol: ").upper().strip()
     transaction_type = input("Enter Transaction Type: ").upper().strip()
     quantity = input("Enter quantity: ").upper().strip()
